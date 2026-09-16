@@ -46,6 +46,8 @@ const Scene = () => {
       let headBone: THREE.Object3D | null = null;
       let screenLight: THREE.Object3D | null = null;
       let mixer: THREE.AnimationMixer;
+      let rafId: number | null = null;
+      let isDisposed = false;
 
       const clock = new THREE.Clock();
 
@@ -70,6 +72,11 @@ const Scene = () => {
       );
 
       loadCharacter().then((gltf) => {
+        if (isDisposed) {
+          // Component was unmounted (e.g. React StrictMode double-invoke)
+          // before loading finished — don't attach anything to a dead scene.
+          return;
+        }
         if (gltf) {
           const animations = setAnimations(gltf);
           hoverDivRef.current && animations.hover(gltf, hoverDivRef.current);
@@ -124,7 +131,7 @@ const Scene = () => {
         landingDiv.addEventListener("touchend", onTouchEnd);
       }
       const animate = () => {
-        requestAnimationFrame(animate);
+        rafId = requestAnimationFrame(animate);
         if (headBone) {
           handleHeadRotation(
             headBone,
@@ -144,19 +151,56 @@ const Scene = () => {
       };
       animate();
       return () => {
+        isDisposed = true;
         clearTimeout(debounce);
-        scene.clear();
-        renderer.dispose();
+
+        // Stop the render loop first — this is the #1 cause of the
+        // out-of-memory crash: without this, every mount (React
+        // StrictMode double-invokes effects in dev, and any remount
+        // in prod) leaves its OLD requestAnimationFrame loop running
+        // forever, each one still calling renderer.render() every
+        // frame on a scene/renderer that's supposed to be dead.
+        // Multiply that by a few remounts and you exhaust GPU/JS heap.
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+        }
+
         window.removeEventListener("resize", () =>
           handleResize(renderer, camera, canvasDiv, character!)
         );
-        if (canvasDiv.current) {
-          canvasDiv.current.removeChild(renderer.domElement);
-        }
         if (landingDiv) {
           document.removeEventListener("mousemove", onMouseMove);
           landingDiv.removeEventListener("touchstart", onTouchStart);
           landingDiv.removeEventListener("touchend", onTouchEnd);
+        }
+
+        // Dispose GPU resources (geometries, materials, textures) before
+        // clearing the scene graph, otherwise WebGL memory isn't freed.
+        scene.traverse((obj) => {
+          if (obj instanceof THREE.Mesh) {
+            obj.geometry?.dispose();
+            const material = obj.material;
+            const materials = Array.isArray(material) ? material : [material];
+            materials.forEach((mat) => {
+              Object.values(mat).forEach((value) => {
+                if (value instanceof THREE.Texture) {
+                  value.dispose();
+                }
+              });
+              mat.dispose?.();
+            });
+          }
+        });
+        scene.clear();
+        renderer.dispose();
+        renderer.forceContextLoss();
+
+        if (canvasDiv.current) {
+          try {
+            canvasDiv.current.removeChild(renderer.domElement);
+          } catch {
+            // already removed
+          }
         }
       };
     }

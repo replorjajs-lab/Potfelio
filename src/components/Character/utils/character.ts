@@ -66,6 +66,11 @@ const setCharacter = (
               character!.getObjectByName("footR")!.position.y = 3.36;
               character!.getObjectByName("footL")!.position.y = 3.36;
               dracoLoader.dispose();
+              // Free the temporary blob URL now that the GLTF has been
+              // parsed — otherwise it (and the decrypted ArrayBuffer
+              // it points to) stays pinned in memory for the page's
+              // lifetime.
+              URL.revokeObjectURL(blobUrl);
             },
             (xhr) => {
               // Actual model download progress (20% to 90%)
